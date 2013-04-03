@@ -3,17 +3,16 @@ import itertools, re, sys
 from django.conf import urls
 from django.core import exceptions, urlresolvers
 from django.db.models import base as models_base
-from django.db.models.sql import constants
+from django.db.models import constants
+try:
+    from django.db.models import constants
+except ImportError:
+    from django.db.models.sql import constants
+
 from django.utils import datastructures
-
 from tastypie import bundle as tastypie_bundle, exceptions as tastypie_exceptions, fields as tastypie_fields, http, resources, utils
-
 import mongoengine
 from mongoengine import fields as mongoengine_fields, queryset
-try:
-    from mongoengine.queryset import tranform as mongoengine_tranform
-except ImportError:
-    mongoengine_tranform = None
 
 from tastypie_mongoengine import fields
 
@@ -21,7 +20,7 @@ from tastypie_mongoengine import fields
 # We use a mock Query object to provide the same interface and return query terms by MongoEngine. 
 # MongoEngine code might not expose these query terms, so we fallback to hard-coded values.
 
-QUERY_TERMS_ALL = getattr(mongoengine_tranform, 'MATCH_OPERATORS', ('ne', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'mod', 'all', 'size', 'exists', 'not', 'within_distance', 'within_spherical_distance', 'within_box', 'within_polygon', 'near', 'near_sphere','contains', 'icontains', 'startswith', 'istartswith', 'endswith', 'iendswith', 'exact', 'iexact', 'match'))
+QUERY_TERMS_ALL = getattr(queryset, 'QUERY_TERMS_ALL', ('ne', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'mod', 'all', 'size', 'exists', 'not', 'within_distance', 'within_spherical_distance', 'within_box', 'within_polygon', 'near', 'near_sphere','contains', 'icontains', 'startswith', 'istartswith', 'endswith', 'iendswith', 'exact', 'iexact', 'match'))
 
 class Query(object):
     query_terms = dict([(query_term, None) for query_term in QUERY_TERMS_ALL])
@@ -49,7 +48,6 @@ class ListQuerySet(datastructures.SortedDict):
 
     def filter(self, **kwargs):
         result = self
-
         # pk optimization
         if 'pk' in kwargs:
             pk = unicode(self._process_filter_value(kwargs.pop('pk')))
@@ -60,14 +58,32 @@ class ListQuerySet(datastructures.SortedDict):
                 result = ListQuerySet()
 
         for field, value in kwargs.iteritems():
-            value = self._process_filter_value(value)
-            if constants.LOOKUP_SEP in field:
-                raise tastypie_exceptions.InvalidFilterError("Unsupported filter: (%s, %s)" % (field, value))
+            # bob: support time filtering
+            if field == 'time__gt':
+                result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, 'time') > value])
+            elif field == 'time__gte':
+                result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, 'time') >= value])
+            elif field == 'time__lt':
+                result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, 'time') < value])
+            elif field == 'time__lte':
+                result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, 'time') <= value])
+            else:
+                if constants.LOOKUP_SEP in field:
+                    raise tastypie_exceptions.InvalidFilterError("Unsupported filter: (%s, %s)" % (field, value))
+                try:
+                    result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, field) == value])
+                except AttributeError, e:
+                    raise tastypie_exceptions.InvalidFilterError(e)
 
-            try:
-                result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, field) == value])
-            except AttributeError, e:
-                raise tastypie_exceptions.InvalidFilterError(e)
+        # for field, value in kwargs.iteritems():
+        #     value = self._process_filter_value(value)
+        #     if constants.LOOKUP_SEP in field:
+        #         raise tastypie_exceptions.InvalidFilterError("Unsupported filter: (%s, %s)" % (field, value))
+
+        #     try:
+        #         result = ListQuerySet([(unicode(obj.pk), obj) for obj in result.itervalues() if getattr(obj, field) == value])
+        #     except AttributeError, e:
+        #         raise tastypie_exceptions.InvalidFilterError(e)
 
         return result
 
@@ -322,9 +338,6 @@ class MongoEngineResource(resources.ModelResource):
             self._meta.queryset = resource._meta.queryset
             self.base_fields = resource.base_fields.copy()
             self.fields = resource.fields.copy()
-            if getattr(self._meta, 'prefer_polymorphic_resource_uri', False):
-                if resource.get_resource_uri():
-                    self._meta.resource_name = resource._meta.resource_name
             if getattr(self._meta, 'include_resource_type', True):
                 self.base_fields['resource_type'] = base_fields['resource_type']
                 self.fields['resource_type'] = fields['resource_type']
@@ -442,7 +455,6 @@ class MongoEngineResource(resources.ModelResource):
             # We hydrate field again only if existing value is not None
             if getattr(bundle.obj, field_object.attribute, None) is not None:
                 value = NOT_HYDRATED
-
                 # Tastypie also ignores missing fields in PUT,
                 # so we check for missing field here
                 # (https://github.com/toastdriven/django-tastypie/issues/496)
@@ -456,7 +468,7 @@ class MongoEngineResource(resources.ModelResource):
                         value = None
                 else:
                     value = field_object.hydrate(bundle)
-                if value is None:
+                if value is None and not field_object.blank:
                     setattr(bundle.obj, field_object.attribute, None)
 
             if field_object.blank or field_object.null:
@@ -699,12 +711,11 @@ class MongoEngineResource(resources.ModelResource):
         """
         Update the object in original_bundle in-place using new_data.
         """
-
         from tastypie.utils import dict_strip_unicode_keys
         original_bundle.data.update(**dict_strip_unicode_keys(new_data))
 
         # Now we've got a bundle with the new data sitting in it and we're
-        # we're basically in the same spot as a PUT request. So the rest of this
+        # we're basically in the same spot as a PUT request. SO the rest of this
         # function is cribbed from put_detail.
         self.alter_deserialized_detail_data(request, original_bundle.data)
         
@@ -714,6 +725,7 @@ class MongoEngineResource(resources.ModelResource):
             self._meta.detail_uri_name: self.get_bundle_detail_data(original_bundle),
         }
         return self.obj_update(bundle=original_bundle, **kwargs)
+
 
 class MongoEngineListResource(MongoEngineResource):
     """

@@ -23,20 +23,7 @@ class ApiNameMixin(object):
             return self._resource._meta.api_name
         return None
 
-class GetRelatedMixin(object):
-    def get_related_resource(self, related_instance):
-        related_resource = super(GetRelatedMixin, self).get_related_resource(related_instance)
-        type_map = getattr(related_resource._meta, 'polymorphic', {})
-        if type_map and getattr(related_resource._meta, 'prefer_polymorphic_resource_uri', False):
-            resource = related_resource._get_resource_from_class(type_map, related_instance.__class__)
-            if related_resource.get_resource_uri():
-                related_resource._meta.resource_name = resource._meta.resource_name
-        return related_resource
-
-class TastypieMongoengineMixin(ApiNameMixin, GetRelatedMixin):
-    pass
-
-class BuildRelatedMixin(TastypieMongoengineMixin):
+class BuildRelatedMixin(ApiNameMixin):
     def build_related_resource(self, value, **kwargs):
         # A version of build_related_resource which allows only dictionary-like data
         if hasattr(value, 'items'):
@@ -51,7 +38,7 @@ class BuildRelatedMixin(TastypieMongoengineMixin):
         else:
             raise exceptions.ApiFieldError("The '%s' field was not given a dictionary-alike data: %s." % (self.instance_name, value))
 
-class ReferenceField(TastypieMongoengineMixin, fields.ToOneField):
+class ReferenceField(ApiNameMixin, fields.ToOneField):
     """
     References another MongoEngine document.
     """
@@ -219,7 +206,7 @@ class EmbeddedListField(BuildRelatedMixin, fields.ToManyField):
         return self._to_class_with_listresource
 
 
-class ReferencedListField(TastypieMongoengineMixin, fields.ToManyField):
+class ReferencedListField(ApiNameMixin, fields.ToManyField):
     """
     Represents a list of referenced objects. It must be used in conjunction
     with ReferenceField.
