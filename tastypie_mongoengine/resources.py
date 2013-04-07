@@ -3,7 +3,6 @@ import itertools, re, sys
 from django.conf import urls
 from django.core import exceptions, urlresolvers
 from django.db.models import base as models_base
-from django.db.models import constants
 try:
     from django.db.models import constants
 except ImportError:
